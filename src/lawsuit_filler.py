@@ -897,6 +897,106 @@ OCR 识别文本：
                 self.info[key] = str(result[key]).strip()
 
 
+class HybridCaseInfoExtractor:
+    """混合提取模式：大模型 + 正则交叉验证"""
+    
+    def __init__(self, ocr_text: str, llm_config: Dict, ocr_mode: str = 'local'):
+        self.ocr_text = ocr_text
+        self.llm_config = llm_config
+        self.ocr_mode = ocr_mode
+        
+        # 分别初始化两种提取器
+        self.llm_extractor = LLMCaseInfoExtractor(ocr_text, llm_config)
+        self.regex_extractor = CaseInfoExtractor(ocr_text, ocr_mode=ocr_mode)
+        
+        self.info = {
+            '合同编号': '',
+            '原告名称': '',
+            '被告姓名': '',
+            '被告证件号码': '',
+            '被告联系电话': '',
+            '借款金额': '',
+            '借款金额大写': '',
+            '借款期限': '',
+            '合同签订日期': '',
+            '提款日期': '',
+            '到期日期': '',
+            '利率': '',
+            '还款方式': '',
+        }
+    
+    def extract(self) -> Dict[str, str]:
+        """混合提取：大模型 + 正则交叉验证"""
+        print(f"   🤖 正在使用大模型提取...")
+        llm_result = self.llm_extractor.extract()
+        
+        print(f"   📝 正在使用正则提取...")
+        regex_result = self.regex_extractor.extract()
+        
+        # 交叉验证，选择最佳结果
+        self._merge_results(llm_result, regex_result)
+        
+        print(f"   ✓ 混合提取完成，共 {len([v for v in self.info.values() if v])} 项信息")
+        return self.info
+    
+    def _merge_results(self, llm_result: Dict, regex_result: Dict):
+        """合并两种提取结果，交叉验证"""
+        
+        # 字段级信任策略
+        # - 正则更可靠：姓名、身份证号、电话号码（格式固定）
+        # - 大模型更可靠：原告名称、还款方式、利率（需要语义理解）
+        # - 其他字段：优先大模型，正则验证
+        
+        print(f"\n   📊 交叉验证结果:")
+        
+        for key in self.info.keys():
+            llm_val = llm_result.get(key, '').strip()
+            regex_val = regex_result.get(key, '').strip()
+            
+            if key in ['被告姓名', '被告证件号码', '被告联系电话']:
+                # 固定格式字段：优先正则
+                if regex_val:
+                    self.info[key] = regex_val
+                    if llm_val and llm_val != regex_val:
+                        print(f"      ⚠️ {key}: 正则='{regex_val}' vs 大模型='{llm_val}' → 选择正则")
+                    else:
+                        print(f"      ✓ {key}: {regex_val}")
+                else:
+                    self.info[key] = llm_val
+                    if llm_val:
+                        print(f"      ✓ {key}: {llm_val} (正则未提取)")
+            
+            elif key in ['原告名称', '还款方式', '利率']:
+                # 语义理解字段：优先大模型
+                if llm_val:
+                    self.info[key] = llm_val
+                    if regex_val and regex_val != llm_val:
+                        print(f"      ⚠️ {key}: 大模型='{llm_val}' vs 正则='{regex_val}' → 选择大模型")
+                    else:
+                        print(f"      ✓ {key}: {llm_val}")
+                else:
+                    self.info[key] = regex_val
+                    if regex_val:
+                        print(f"      ✓ {key}: {regex_val} (大模型未提取)")
+            
+            else:
+                # 其他字段：优先大模型，正则验证
+                if llm_val and regex_val:
+                    if llm_val == regex_val:
+                        self.info[key] = llm_val
+                        print(f"      ✓ {key}: {llm_val} (两者一致)")
+                    else:
+                        # 不一致时，选择看起来更完整的
+                        self.info[key] = llm_val if len(llm_val) > len(regex_val) else regex_val
+                        print(f"      ⚠️ {key}: 不一致 → 选择更完整的 '{self.info[key]}'")
+                elif llm_val:
+                    self.info[key] = llm_val
+                    print(f"      ✓ {key}: {llm_val}")
+                elif regex_val:
+                    self.info[key] = regex_val
+                    print(f"      ✓ {key}: {regex_val}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='民事起诉状自动填写工具 - 专业版',
@@ -925,8 +1025,8 @@ def main():
     parser.add_argument('-o', '--output', required=True, help='输出文件路径')
     parser.add_argument('--ocr-mode', choices=['local', 'aliyun', 'tencent', 'hybrid'], default='local',
                        help='OCR 模式：local(本地) / tencent(腾讯云) / aliyun(阿里云) / hybrid(混合)')
-    parser.add_argument('--extract-mode', choices=['regex', 'llm'], default='regex',
-                       help='信息提取模式：regex(正则) / llm(大模型)')
+    parser.add_argument('--extract-mode', choices=['regex', 'llm', 'hybrid'], default='regex',
+                       help='信息提取模式：regex(正则) / llm(大模型) / hybrid(混合交叉验证)')
     parser.add_argument('--llm-provider', default='aliyun',
                        help='大模型提供商：aliyun(阿里云百炼)')
     parser.add_argument('--llm-api-key', help='大模型 API Key')
@@ -1019,6 +1119,15 @@ def main():
         llm_config['model'] = args.llm_model or llm_config.get('model', 'qwen-plus')
         
         info_extractor = LLMCaseInfoExtractor(ocr_text, llm_config)
+        case_info = info_extractor.extract()
+    elif args.extract_mode == 'hybrid':
+        # 混合提取模式：大模型 + 正则交叉验证
+        llm_config = config.get('llm', {}) if config else {}
+        llm_config['provider'] = args.llm_provider
+        llm_config['api_key'] = args.llm_api_key or llm_config.get('api_key', '')
+        llm_config['model'] = args.llm_model or llm_config.get('model', 'qwen-plus')
+        
+        info_extractor = HybridCaseInfoExtractor(ocr_text, llm_config, ocr_mode=args.ocr_mode)
         case_info = info_extractor.extract()
     else:
         # 使用正则提取
