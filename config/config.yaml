@@ -2,8 +2,8 @@
 
 # 腾讯云 OCR 配置
 tencent:
-  secret_id: YOUR_TENCENT_SECRET_ID
-  secret_key: YOUR_TENCENT_SECRET_KEY
+  secret_id: YOUR_TENCENT_SECRET_ID  # 请替换为你的 SecretId
+  secret_key: YOUR_TENCENT_SECRET_KEY  # 请替换为你的 SecretKey
   region: ap-guangzhou
 
 # 阿里云 OCR 配置（如使用）
